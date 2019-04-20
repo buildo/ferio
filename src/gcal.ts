@@ -1,18 +1,18 @@
-import * as express from 'express';
-import * as fs from 'fs';
-import * as os from 'os';
-import { google, oauth2_v2, calendar_v3 } from 'googleapis';
-import { logInfo, logDetail, logError } from './utils';
-import { taskify, TaskEither, tryCatch } from 'fp-ts/lib/TaskEither';
-import { Credentials } from 'google-auth-library';
-import { Interval } from './commands/add';
-import { format, addDays, startOfDay, endOfDay } from 'date-fns';
-import { GaxiosResponse } from 'gaxios';
-import { constIdentity } from 'fp-ts/lib/function';
+import * as express from "express";
+import * as fs from "fs";
+import * as os from "os";
+import { google, oauth2_v2, calendar_v3 } from "googleapis";
+import { logInfo, logDetail, logError } from "./utils";
+import { TaskEither, tryCatch } from "fp-ts/lib/TaskEither";
+import { Credentials } from "google-auth-library";
+import { Interval } from "./commands/add";
+import { format, addDays, startOfDay, endOfDay } from "date-fns";
+import { GaxiosResponse } from "gaxios";
+import { constIdentity } from "fp-ts/lib/function";
 const OAuth2 = google.auth.OAuth2;
 
 const port = 5555;
-const host = 'localhost';
+const host = "localhost";
 
 const ferioDir = `${os.homedir()}/.buildo/ferio`;
 const credentialsPath = `${ferioDir}/credentials`;
@@ -27,12 +27,12 @@ const oauth2Client = new OAuth2(
 );
 
 const auth = google.oauth2({
-  version: 'v2',
+  version: "v2",
   auth: oauth2Client
 });
 
 const calendar = google.calendar({
-  version: 'v3',
+  version: "v3",
   auth: oauth2Client
 });
 
@@ -41,7 +41,9 @@ function authenticate(): TaskEither<unknown, Credentials> {
     new Promise<Credentials>((resolve, reject) => {
       const retrieveCredentials = () => {
         if (fs.existsSync(credentialsPath)) {
-          const tokens = JSON.parse(fs.readFileSync(credentialsPath, 'utf-8'));
+          const tokens = JSON.parse(
+            fs.readFileSync(credentialsPath, "utf-8")
+          ) as Credentials;
           if (tokens.expiry_date > Date.now()) {
             oauth2Client.setCredentials(tokens);
             return tokens;
@@ -57,26 +59,26 @@ function authenticate(): TaskEither<unknown, Credentials> {
       }
 
       const scopes = [
-        'https://www.googleapis.com/auth/calendar.events',
-        'https://www.googleapis.com/auth/userinfo.profile'
+        "https://www.googleapis.com/auth/calendar.events",
+        "https://www.googleapis.com/auth/userinfo.profile"
       ];
 
       const url = oauth2Client.generateAuthUrl({
-        access_type: 'offline',
+        access_type: "offline",
         scope: scopes
       });
 
-      logInfo('\nVisit this URL to authenticate with your Google account:');
+      logInfo("\nVisit this URL to authenticate with your Google account:");
       logDetail(`\n  ${url}`);
 
       const app = express();
 
-      app.get('/authorize', (req, res) => {
+      app.get("/authorize", (req, res) => {
         const code = req.query.code;
         res
           .status(200)
           .send(
-            'Successfully authenticated! You can now close this tab and go back to your terminal.'
+            "Successfully authenticated! You can now close this tab and go back to your terminal."
           );
 
         oauth2Client.getToken(code, (err, tokens) => {
@@ -106,7 +108,7 @@ function authenticatedApiCall<A>(
   f: () => Promise<GaxiosResponse<A>>
 ): TaskEither<unknown, A> {
   return authenticate()
-    .chainSecond(tryCatch(f, constIdentity))
+    .chain(() => tryCatch(f, constIdentity))
     .map(r => r.data)
     .mapLeft(logError);
 }
@@ -120,12 +122,12 @@ export function getEvents(
 ): TaskEither<unknown, calendar_v3.Schema$Events> {
   return authenticatedApiCall(() =>
     calendar.events.list({
-      calendarId: 'primary',
+      calendarId: "primary",
       timeMin: format(startOfDay(interval.from)),
       timeMax: format(endOfDay(interval.to)),
       showDeleted: false,
       singleEvents: true,
-      orderBy: 'startTime'
+      orderBy: "startTime"
     })
   );
 }
@@ -136,14 +138,14 @@ export function createEvent(
 ): TaskEither<unknown, calendar_v3.Schema$Event> {
   return authenticatedApiCall(() =>
     calendar.events.insert({
-      calendarId: 'primary',
+      calendarId: "primary",
       requestBody: {
         summary: title,
         start: {
-          date: format(interval.from, 'YYYY-MM-DD')
+          date: format(interval.from, "YYYY-MM-DD")
         },
         end: {
-          date: format(addDays(interval.to, 1), 'YYYY-MM-DD')
+          date: format(addDays(interval.to, 1), "YYYY-MM-DD")
         }
       }
     })
@@ -156,7 +158,7 @@ export function declineEvent(
   return authenticatedApiCall(() =>
     calendar.events.patch({
       eventId: event.id,
-      calendarId: 'primary',
+      calendarId: "primary",
       requestBody: {
         attendees: [
           ...(event.attendees || []).filter(a => !a.self),
@@ -164,7 +166,7 @@ export function declineEvent(
             .filter(a => a.self)
             .map(r => ({
               ...r,
-              responseStatus: 'declined'
+              responseStatus: "declined"
             }))
         ]
       }
@@ -178,7 +180,7 @@ export function deleteEvent(
   return authenticatedApiCall(() =>
     calendar.events.delete({
       eventId: event.id,
-      calendarId: 'primary'
+      calendarId: "primary"
     })
   );
 }
