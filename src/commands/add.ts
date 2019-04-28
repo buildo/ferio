@@ -6,13 +6,19 @@ import {
   registerPrompt,
   ChoiceType
 } from "inquirer";
-import { ReaderTaskEither, ask } from "fp-ts/lib/ReaderTaskEither";
+import {
+  ReaderTaskEither,
+  ask,
+  fromTaskEither
+} from "fp-ts/lib/ReaderTaskEither";
 import { TaskEither, tryCatch, taskEither } from "fp-ts/lib/TaskEither";
 import * as yargs from "yargs";
 import { createEvent, getEvents, declineEvent, deleteEvent } from "../gcal";
 import { array } from "fp-ts/lib/Array";
 import { calendar_v3 } from "googleapis";
 import { format } from "date-fns";
+import { addTask } from "../teamweek";
+import chalk from "chalk";
 
 registerPrompt("datetime", require("inquirer-datepicker-prompt"));
 
@@ -31,10 +37,9 @@ export function handler(): Promise<unknown> {
             "DD/MM/YY"
           )}, got it!`
         );
-        logInfo("\n:calendar: Adding your vacation to Google Calendar...\n");
         return (
           addOnCalendar()
-            // .chain(addOnTeamweek)
+            .chain(addOnTeamweek)
             // .chain(addOnSlack)
             .value({ when, where })
         );
@@ -115,12 +120,16 @@ function manageEventsInvited(
   if (eventsInvited.length === 0) {
     return taskEither.of(null);
   } else {
+    console.log(
+      `  These are the events you're ${chalk.yellow.bold(
+        "invited to"
+      )} during your vacation.`
+    );
     return askPrompt([
       {
         type: "checkbox",
         name: "eventsToDecline",
-        message:
-          "These are the events you're invited to during your vacation. Choose the ones you want to decline:",
+        message: "Choose the ones you want to decline:",
         choices: eventsToChoices(eventsInvited, true)
       }
     ]).chain(
@@ -136,16 +145,19 @@ function manageEventsInvited(
 function manageEventsCreated(
   eventsCreated: Array<calendar_v3.Schema$Event>
 ): TaskEither<unknown, unknown> {
-  if (eventsCreated.length === 0) {
+  const nonRecurrentEvensts = eventsCreated.filter(event => !event.recurrence);
+  if (nonRecurrentEvensts.length === 0) {
     return taskEither.of(null);
   } else {
+    logInfo(
+      "These are the events created by you that are scheduled during your vacation."
+    );
     return askPrompt([
       {
         type: "checkbox",
         name: "eventsToDelete",
-        message:
-          "These are the events created by you that are scheduled during your vacation. Choose the ones you want to delete:",
-        choices: eventsToChoices(eventsCreated, false)
+        message: "Choose the ones you want to delete:",
+        choices: eventsToChoices(nonRecurrentEvensts, false)
       }
     ]).chain(
       ({
@@ -158,34 +170,33 @@ function manageEventsCreated(
 }
 
 function manageExistingEvents(): ReaderTaskEither<Context, unknown, unknown> {
-  return ask<Context, unknown>().chain(
-    ({ when }) =>
-      new ReaderTaskEither(() =>
-        getEvents(when).chain(response => {
-          const eventsInvited = response.items.filter(event => event.attendees);
-          const eventsCreated = response.items.filter(
-            event => event.creator.self
-          );
-          return manageEventsCreated(eventsCreated).chainSecond(
-            manageEventsInvited(eventsInvited)
-          );
-        })
-      )
+  logInfo(":sparkles: Before we move forward, let's clear up your calendar");
+  return ask<Context, unknown>().chain(({ when }) =>
+    fromTaskEither(
+      getEvents(when).chain(response => {
+        const eventsInvited = response.items.filter(event => event.attendees);
+        const eventsCreated = response.items.filter(
+          event => event.creator.self
+        );
+        return manageEventsCreated(eventsCreated).chainSecond(
+          manageEventsInvited(eventsInvited)
+        );
+      })
+    )
   );
 }
 
 function createEventOnCalendar(): ReaderTaskEither<Context, unknown, void> {
-  return ask<Context, unknown>().chain(
-    ({ when, where }) =>
-      new ReaderTaskEither(() =>
-        createEvent(when, `Ferie ${where}`).map(events => {
-          logInfo(
-            "\n:white_check_mark: Created event on your calendar. Click here to see it:\n"
-          );
-          logDetail(events.htmlLink);
-          logDetail("\n");
-        })
-      )
+  return ask<Context, unknown>().chain(({ when, where }) =>
+    fromTaskEither(
+      createEvent(when, `Ferie ${where}`).map(events => {
+        logInfo(
+          "\n:white_check_mark: Created event on your calendar. Click here to see it:\n"
+        );
+        logDetail(events.htmlLink);
+        logDetail("\n");
+      })
+    )
   );
 }
 
@@ -195,7 +206,15 @@ type Context = {
 };
 
 function addOnCalendar(): ReaderTaskEither<Context, unknown, void> {
+  logInfo("\n:calendar: Adding your vacation to Google Calendar...\n");
   return manageExistingEvents().chain(createEventOnCalendar);
 }
-declare function addOnTeamweek(): ReaderTaskEither<Context, unknown, void>;
+
+function addOnTeamweek(): ReaderTaskEither<Context, unknown, void> {
+  logInfo("\n:hourglass: Adding your vacation to Teamweek...\n");
+  return ask<Context, unknown>().chain(({ when, where }) =>
+    fromTaskEither(addTask(where, when))
+  );
+}
+
 declare function addOnSlack(): ReaderTaskEither<Context, unknown, void>;

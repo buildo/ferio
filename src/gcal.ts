@@ -15,14 +15,14 @@ const port = 5555;
 const host = "localhost";
 
 const ferioDir = `${os.homedir()}/.buildo/ferio`;
-const credentialsPath = `${ferioDir}/credentials`;
+const credentialsPath = `${ferioDir}/google_credentials`;
 
 const ferioAccessKey = process.env.GOOGLE_API_ACCESS_KEY;
-const ferioSecret = process.env.GOOGLE_API_SECRET_KEY;
+const ferioSecretKey = process.env.GOOGLE_API_SECRET_KEY;
 
 const oauth2Client = new OAuth2(
   ferioAccessKey,
-  ferioSecret,
+  ferioSecretKey,
   `http://${host}:${port}/authorize`
 );
 
@@ -93,6 +93,8 @@ function authenticate(): TaskEither<unknown, Credentials> {
             );
             resolve(tokens);
           } else {
+            logError(`${err.response.status} ${err.response.statusText}`);
+            logError(JSON.stringify(err.response.data));
             reject(err);
           }
         });
@@ -109,8 +111,7 @@ function authenticatedApiCall<A>(
 ): TaskEither<unknown, A> {
   return authenticate()
     .chain(() => tryCatch(f, constIdentity))
-    .map(r => r.data)
-    .mapLeft(logError);
+    .map(r => r.data);
 }
 
 export function getMe(): TaskEither<unknown, oauth2_v2.Schema$Userinfoplus> {
