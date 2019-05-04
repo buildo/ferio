@@ -20,6 +20,7 @@ import { calendar_v3 } from "googleapis";
 import { format } from "date-fns";
 import { addTask } from "../teamweek";
 import chalk from "chalk";
+import { Do } from "fp-ts-contrib/lib/Do";
 
 registerPrompt("datetime", require("inquirer-datepicker-prompt"));
 
@@ -29,24 +30,23 @@ export const builder: { [key: string]: yargs.Options } = {};
 
 export function handler(): Promise<unknown> {
   logInfo(":palm_tree: Getting a break? Great!\n");
-  return mapLeft(
-    taskEither.chain(askWhere(), where =>
-      taskEither.chain(askWhen(), when => {
-        logInfo(
-          `:ok_hand: ${where} from ${format(when.from, "DD/MM/YY")} to ${format(
-            when.to,
-            "DD/MM/YY"
-          )}, got it!`
-        );
-        return readerTaskEither.chain(addOnCalendar(), addOnTeamweek)({
-          when,
-          where
-        });
-        // .chain(addOnSlack)
-      })
-    ),
-    logError
-  )().catch(logError);
+  const task = Do(taskEither)
+    .bind("where", askWhere())
+    .bind("when", askWhen())
+    .doL(({ where, when }) => {
+      logInfo(
+        `:ok_hand: ${where} from ${format(when.from, "DD/MM/YY")} to ${format(
+          when.to,
+          "DD/MM/YY"
+        )}, got it!`
+      );
+      return readerTaskEither.chain(addOnCalendar(), addOnTeamweek)({
+        when,
+        where
+      });
+    })
+    .done();
+  return mapLeft(task, logError)().catch(logError);
 }
 
 export interface Interval {
@@ -54,59 +54,51 @@ export interface Interval {
   to: Date;
 }
 
-function askPrompt(questions: Questions): TaskEither<unknown, Answers> {
-  return tryCatch(() => prompt(questions), reason => reason);
+function askPrompt<A extends Answers>(
+  questions: Questions
+): TaskEither<unknown, A> {
+  return tryCatch(() => prompt(questions) as Promise<A>, reason => reason);
 }
 
 function askWhere(): TaskEither<unknown, string> {
-  return taskEither.map(
-    askPrompt([
-      {
-        type: "input",
-        name: "where",
-        message: "Where are you going?"
-      }
-    ]),
-    a => a.where
-  );
+  const answers = askPrompt<{ where: string }>([
+    {
+      type: "input",
+      name: "where",
+      message: "Where are you going?"
+    }
+  ]);
+  return taskEither.map(answers, a => a.where);
 }
 
 function askWhen(): TaskEither<unknown, Interval> {
-  const from = taskEither.map(
-    askPrompt([
-      {
-        type: "datetime",
-        name: "when_from",
-        message: "From when?",
-        date: {
-          min: format(Date.now(), "M/D/YYYY")
-        },
-        format: ["dd", "/", "mm", "/", "yyyy"]
-      } as any
-    ]),
-    a => a.when_from
-  );
+  const fromAnswers = askPrompt<{ when_from: Date }>([
+    {
+      type: "datetime",
+      name: "when_from",
+      message: "From when?",
+      date: {
+        min: format(Date.now(), "M/D/YYYY")
+      },
+      format: ["dd", "/", "mm", "/", "yyyy"]
+    } as any
+  ]);
+  const from = taskEither.map(fromAnswers, a => a.when_from);
 
-  return taskEither.chain(from, fromDate =>
-    taskEither.map(
-      taskEither.map(
-        askPrompt([
-          {
-            type: "datetime",
-            name: "when_to",
-            message: "To when?",
-            initial: fromDate,
-            format: ["dd", "/", "mm", "/", "yyyy"]
-          } as any
-        ]),
-        a => a.when_to
-      ),
-      toDate => ({
-        from: fromDate,
-        to: toDate
-      })
+  return Do(taskEither)
+    .bind("fromDate", from)
+    .bindL("a", ({ fromDate }) =>
+      askPrompt<{ when_to: Date }>([
+        {
+          type: "datetime",
+          name: "when_to",
+          message: "To when?",
+          initial: fromDate,
+          format: ["dd", "/", "mm", "/", "yyyy"]
+        } as any
+      ])
     )
-  );
+    .return(({ fromDate, a }) => ({ from: fromDate, to: a.when_to }));
 }
 
 function eventsToChoices(
@@ -134,21 +126,21 @@ function manageEventsInvited(
         "invited to"
       )} during your vacation.`
     );
-    return taskEither.chain(
-      askPrompt([
-        {
-          type: "checkbox",
-          name: "eventsToDecline",
-          message: "Choose the ones you want to decline:",
-          choices: eventsToChoices(eventsInvited, true)
-        }
-      ]),
-      ({
-        eventsToDecline
-      }: {
-        eventsToDecline: Array<calendar_v3.Schema$Event>;
-      }) => array.sequence(taskEither)(eventsToDecline.map(declineEvent))
-    );
+    Do(taskEither)
+      .bind(
+        "response",
+        askPrompt<{ eventsToDecline: Array<calendar_v3.Schema$Event> }>([
+          {
+            type: "checkbox",
+            name: "eventsToDecline",
+            message: "Choose the ones you want to decline:",
+            choices: eventsToChoices(eventsInvited, true)
+          }
+        ])
+      )
+      .return(({ response }) =>
+        array.traverse(taskEither)(response.eventsToDecline, declineEvent)
+      );
   }
 }
 
@@ -162,45 +154,53 @@ function manageEventsCreated(
     logInfo(
       "These are the events created by you that are scheduled during your vacation."
     );
-    return taskEither.chain(
-      askPrompt([
-        {
-          type: "checkbox",
-          name: "eventsToDelete",
-          message: "Choose the ones you want to delete:",
-          choices: eventsToChoices(nonRecurrentEvensts, false)
-        }
-      ]),
-      ({
-        eventsToDelete
-      }: {
-        eventsToDelete: Array<calendar_v3.Schema$Event>;
-      }) => array.sequence(taskEither)(eventsToDelete.map(deleteEvent))
-    );
+    Do(taskEither)
+      .bind(
+        "response",
+        askPrompt<{ eventsToDelete: Array<calendar_v3.Schema$Event> }>([
+          {
+            type: "checkbox",
+            name: "eventsToDelete",
+            message: "Choose the ones you want to delete:",
+            choices: eventsToChoices(nonRecurrentEvensts, false)
+          }
+        ])
+      )
+      .return(({ response }) =>
+        array.traverse(taskEither)(response.eventsToDelete, deleteEvent)
+      );
   }
 }
 
 function manageExistingEvents(): ReaderTaskEither<Context, unknown, unknown> {
   logInfo(":sparkles: Before we move forward, let's clear up your calendar");
   return ({ when }) =>
-    taskEither.chain(getEvents(when), response => {
-      const eventsInvited = response.items.filter(event => event.attendees);
-      const eventsCreated = response.items.filter(event => event.creator.self);
-      return taskEither.chain(manageEventsCreated(eventsCreated), () =>
-        manageEventsInvited(eventsInvited)
-      );
-    });
+    Do(taskEither)
+      .bind("response", getEvents(when))
+      .doL(({ response }) => {
+        const eventsCreated = response.items.filter(
+          event => event.creator.self
+        );
+        return manageEventsCreated(eventsCreated);
+      })
+      .doL(({ response }) => {
+        const eventsInvited = response.items.filter(event => event.attendees);
+        return manageEventsInvited(eventsInvited);
+      })
+      .done();
 }
 
 function createEventOnCalendar(): ReaderTaskEither<Context, unknown, void> {
   return ({ when, where }) =>
-    taskEither.map(createEvent(when, `Ferie ${where}`), events => {
-      logInfo(
-        "\n:white_check_mark: Created event on your calendar. Click here to see it:\n"
-      );
-      logDetail(events.htmlLink);
-      logDetail("\n");
-    });
+    Do(taskEither)
+      .bind("events", createEvent(when, `Ferie ${where}`))
+      .return(({ events }) => {
+        logInfo(
+          "\n:white_check_mark: Created event on your calendar. Click here to see it:\n"
+        );
+        logDetail(events.htmlLink);
+        logDetail("\n");
+      });
 }
 
 type Context = {

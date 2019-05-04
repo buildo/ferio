@@ -1465,6 +1465,11 @@ forwarded@~0.1.2:
   resolved "https://registry.yarnpkg.com/forwarded/-/forwarded-0.1.2.tgz#98c23dab1175657b8c0573e8ceccd91b0ff18c84"
   integrity sha1-mMI9qxF1ZXuMBXPozszZGw/xjIQ=
 
+fp-ts-contrib@^0.0.5:
+  version "0.0.5"
+  resolved "https://registry.yarnpkg.com/fp-ts-contrib/-/fp-ts-contrib-0.0.5.tgz#2eadda25b2cd0038d41875f73ecdbacfbc69e8a3"
+  integrity sha512-r2TV9yXWEUS0u2H56tYRtJNwXCwdn5TUg+8+Tj6eHKYLDLlND3o3qC1ObqTmdRxhMX+NYrkMHnl/Ggwau081EA==
+
 "fp-ts@github:gcanti/fp-ts#v2-lib":
   version "2.0.0"
   resolved "https://codeload.github.com/gcanti/fp-ts/tar.gz/94168e134d1e5e18ad7a93ba442ccb4178aa0ef5"

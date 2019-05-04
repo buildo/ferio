@@ -37,6 +37,7 @@
     "date-fns": "^1.30.1",
     "express": "^4.16.4",
     "fp-ts": "github:gcanti/fp-ts#v2-lib",
+    "fp-ts-contrib": "^0.0.5",
     "googleapis": "^37.2.0",
     "inquirer": "^6.2.0",
     "inquirer-datepicker-prompt": "^0.4.2",

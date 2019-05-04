@@ -12,9 +12,10 @@ import * as os from "os";
 import { logInfo, logDetail, logError } from "./utils";
 import express = require("express");
 import fetch, { Headers } from "node-fetch";
-import { identity } from "fp-ts/lib/function";
+import { identity, constNull } from "fp-ts/lib/function";
 import { array } from "fp-ts";
 import { Interval } from "./commands/add";
+import { Do } from "fp-ts-contrib/lib/Do";
 
 const ferioAccessKey = process.env.TEAMWEEK_API_ACCESS_KEY;
 const ferioSecretKey = process.env.TEAMWEEK_API_SECRET_KEY;
@@ -114,22 +115,20 @@ function authenticatedRequest<A, B = {}>(
   method: "GET" | "POST",
   body?: B
 ): TaskEither<unknown, A> {
-  return mapLeft(
-    taskEither.chain(authenticate(), token =>
-      tryCatch(
-        () =>
-          fetch(`https://teamweek.com/api/v4${path}`, {
-            method,
-            headers: new Headers({
-              Authorization: `Bearer ${token["access_token"]}`
-            }),
-            body: JSON.stringify(body)
-          }).then(r => r.json()),
-        identity
-      )
-    ),
-    logError
+  const request = taskEither.chain(authenticate(), token =>
+    tryCatch(
+      () =>
+        fetch(`https://teamweek.com/api/v4${path}`, {
+          method,
+          headers: new Headers({
+            Authorization: `Bearer ${token["access_token"]}`
+          }),
+          body: JSON.stringify(body)
+        }).then(r => r.json()),
+      identity
+    )
   );
+  return mapLeft(request, logError);
 }
 
 function get<A>(path: string): TaskEither<unknown, A> {
@@ -195,34 +194,42 @@ export function getProjects(): TaskEither<unknown, Array<Project>> {
 }
 
 export function getFerieProject(): TaskEither<unknown, Project> {
-  return taskEither.chain(getProjects(), projects =>
-    fold(
-      array.findFirst(projects, w => w.name.toLowerCase() === "ferie"),
-      () => fromLeft("'ferie' project not found"),
-      taskEither.of
-    )
-  );
+  return Do(taskEither)
+    .bind("projects", getProjects())
+    .bindL("project", ({ projects }) => {
+      const project = array.findFirst(
+        projects,
+        w => w.name.toLowerCase() === "ferie"
+      );
+      return fold(
+        project,
+        () => fromLeft("'ferie' project not found"),
+        taskEither.of
+      );
+    })
+    .return(({ project }) => project);
 }
 
 export function addTask(
   name: string,
   interval: Interval
 ): TaskEither<unknown, void> {
-  return taskEither.chain(getMe(), user =>
-    taskEither.chain(getBuildoWorkspace(), workspace =>
-      taskEither.chain(getFerieProject(), project =>
-        post<void, Task>(`/${workspace.id}/tasks`, {
-          name,
-          project_id: project.id,
-          user_id: user.id,
-          start_date: interval.from.toISOString().split("T")[0],
-          end_date: interval.to.toISOString().split("T")[0],
-          color: project.color,
-          done: false,
-          pinned: false,
-          estimated_hours: 0
-        })
-      )
+  return Do(taskEither)
+    .bind("user", getMe())
+    .bind("workspace", getBuildoWorkspace())
+    .bind("project", getFerieProject())
+    .doL(({ user, workspace, project }) =>
+      post<void, Task>(`/${workspace.id}/tasks`, {
+        name,
+        project_id: project.id,
+        user_id: user.id,
+        start_date: interval.from.toISOString().split("T")[0],
+        end_date: interval.to.toISOString().split("T")[0],
+        color: project.color,
+        done: false,
+        pinned: false,
+        estimated_hours: 0
+      })
     )
-  );
+    .return(constNull);
 }
