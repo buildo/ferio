@@ -3,15 +3,16 @@ import {
   TaskEither,
   tryCatch,
   taskEither,
-  fromLeft
+  fromLeft,
+  mapLeft
 } from "fp-ts/lib/TaskEither";
-import { Option, some, none } from "fp-ts/lib/Option";
+import { Option, some, none, option, fold } from "fp-ts/lib/Option";
 import * as fs from "fs";
 import * as os from "os";
 import { logInfo, logDetail, logError } from "./utils";
 import express = require("express");
 import fetch, { Headers } from "node-fetch";
-import { constIdentity } from "fp-ts/lib/function";
+import { identity } from "fp-ts/lib/function";
 import { array } from "fp-ts";
 import { Interval } from "./commands/add";
 
@@ -54,49 +55,55 @@ export function authenticate(): TaskEither<unknown, Credentials> {
         return none;
       };
 
-      return retrieveCredentials().foldL(() => {
-        const authorizationUri = oauth2.authorizationCode.authorizeURL({
-          redirect_uri: `http://localhost:${port}/authorize`,
-          state: Math.random()
-            .toString(36)
-            .substring(20)
-        });
+      return fold(
+        retrieveCredentials(),
+        () => {
+          const authorizationUri = oauth2.authorizationCode.authorizeURL({
+            redirect_uri: `http://localhost:${port}/authorize`,
+            state: Math.random()
+              .toString(36)
+              .substring(20)
+          });
 
-        logInfo("\nVisit this URL to authenticate with your Teamweek account:");
-        logDetail(`\n  ${authorizationUri}`);
+          logInfo(
+            "\nVisit this URL to authenticate with your Teamweek account:"
+          );
+          logDetail(`\n  ${authorizationUri}`);
 
-        const app = express();
+          const app = express();
 
-        app.get("/authorize", (req, res) => {
-          const code = req.query.code;
-          res
-            .status(200)
-            .send(
-              "Successfully authenticated! You can now close this tab and go back to your terminal."
-            );
-
-          const tokenConfig = {
-            code,
-            redirect_uri: "http://localhost:5555/authorize"
-          };
-
-          oauth2.authorizationCode
-            .getToken(tokenConfig)
-            .then(result => {
-              const accessToken = oauth2.accessToken.create(result);
-              if (!fs.existsSync(ferioDir)) {
-                fs.mkdirSync(ferioDir, { recursive: true });
-              }
-              fs.writeFileSync(
-                credentialsPath,
-                JSON.stringify(accessToken.token, null, 2)
+          app.get("/authorize", (req, res) => {
+            const code = req.query.code;
+            res
+              .status(200)
+              .send(
+                "Successfully authenticated! You can now close this tab and go back to your terminal."
               );
-              return accessToken.token;
-            })
-            .then(resolve, reject);
-        });
-        app.listen(port);
-      }, resolve);
+
+            const tokenConfig = {
+              code,
+              redirect_uri: "http://localhost:5555/authorize"
+            };
+
+            oauth2.authorizationCode
+              .getToken(tokenConfig)
+              .then(result => {
+                const accessToken = oauth2.accessToken.create(result);
+                if (!fs.existsSync(ferioDir)) {
+                  fs.mkdirSync(ferioDir, { recursive: true });
+                }
+                fs.writeFileSync(
+                  credentialsPath,
+                  JSON.stringify(accessToken.token, null, 2)
+                );
+                return accessToken.token;
+              })
+              .then(resolve, reject);
+          });
+          app.listen(port);
+        },
+        resolve
+      );
     });
 
   return tryCatch(p, r => r);
@@ -107,8 +114,8 @@ function authenticatedRequest<A, B = {}>(
   method: "GET" | "POST",
   body?: B
 ): TaskEither<unknown, A> {
-  return authenticate()
-    .chain(token =>
+  return mapLeft(
+    taskEither.chain(authenticate(), token =>
       tryCatch(
         () =>
           fetch(`https://teamweek.com/api/v4${path}`, {
@@ -118,10 +125,11 @@ function authenticatedRequest<A, B = {}>(
             }),
             body: JSON.stringify(body)
           }).then(r => r.json()),
-        constIdentity
+        identity
       )
-    )
-    .mapLeft(logError);
+    ),
+    logError
+  );
 }
 
 function get<A>(path: string): TaskEither<unknown, A> {
@@ -129,9 +137,10 @@ function get<A>(path: string): TaskEither<unknown, A> {
 }
 
 function post<A, B>(path: string, body: B): TaskEither<unknown, A> {
-  return authenticatedRequest(path, "POST", body).map<A>((x: any) => {
-    return x;
-  });
+  return taskEither.map(
+    authenticatedRequest(path, "POST", body),
+    (x: any) => x
+  );
 }
 
 interface Workspace {
@@ -170,24 +179,28 @@ export function getMe(): TaskEither<unknown, User> {
 }
 
 export function getBuildoWorkspace(): TaskEither<unknown, Workspace> {
-  return getMe().chain(user =>
-    array
-      .findFirst(user.workspaces, w => w.name.toLowerCase() === "buildo")
-      .fold(fromLeft("'buildo' workspace not found"), taskEither.of)
+  return taskEither.chain(getMe(), user =>
+    fold(
+      array.findFirst(user.workspaces, w => w.name.toLowerCase() === "buildo"),
+      () => fromLeft("'buildo' workspace not found"),
+      x => taskEither.of(x)
+    )
   );
 }
 
 export function getProjects(): TaskEither<unknown, Array<Project>> {
-  return getBuildoWorkspace().chain(workspace =>
+  return taskEither.chain(getBuildoWorkspace(), workspace =>
     get(`/${workspace.id}/projects`)
   );
 }
 
 export function getFerieProject(): TaskEither<unknown, Project> {
-  return getProjects().chain(projects =>
-    array
-      .findFirst(projects, w => w.name.toLowerCase() === "ferie")
-      .fold(fromLeft("'ferie' project not found"), taskEither.of)
+  return taskEither.chain(getProjects(), projects =>
+    fold(
+      array.findFirst(projects, w => w.name.toLowerCase() === "ferie"),
+      () => fromLeft("'ferie' project not found"),
+      taskEither.of
+    )
   );
 }
 
@@ -195,9 +208,9 @@ export function addTask(
   name: string,
   interval: Interval
 ): TaskEither<unknown, void> {
-  return getMe().chain(user =>
-    getBuildoWorkspace().chain(workspace =>
-      getFerieProject().chain(project =>
+  return taskEither.chain(getMe(), user =>
+    taskEither.chain(getBuildoWorkspace(), workspace =>
+      taskEither.chain(getFerieProject(), project =>
         post<void, Task>(`/${workspace.id}/tasks`, {
           name,
           project_id: project.id,

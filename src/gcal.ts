@@ -8,7 +8,8 @@ import { Credentials } from "google-auth-library";
 import { Interval } from "./commands/add";
 import { format, addDays, startOfDay, endOfDay } from "date-fns";
 import { GaxiosResponse } from "gaxios";
-import { constIdentity } from "fp-ts/lib/function";
+import { identity } from "fp-ts/lib/function";
+import { taskEither } from "fp-ts/lib/TaskEither";
 const OAuth2 = google.auth.OAuth2;
 
 const port = 5555;
@@ -109,9 +110,10 @@ function authenticate(): TaskEither<unknown, Credentials> {
 function authenticatedApiCall<A>(
   f: () => Promise<GaxiosResponse<A>>
 ): TaskEither<unknown, A> {
-  return authenticate()
-    .chain(() => tryCatch(f, constIdentity))
-    .map(r => r.data);
+  return taskEither.map(
+    taskEither.chain(authenticate(), () => tryCatch(f, identity)),
+    r => r.data
+  );
 }
 
 export function getMe(): TaskEither<unknown, oauth2_v2.Schema$Userinfoplus> {
