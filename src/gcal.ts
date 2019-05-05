@@ -3,13 +3,19 @@ import * as fs from "fs";
 import * as os from "os";
 import { google, oauth2_v2, calendar_v3 } from "googleapis";
 import { logInfo, logDetail, logError } from "./utils";
-import { TaskEither, tryCatch } from "fp-ts/lib/TaskEither";
-import { Credentials } from "google-auth-library";
+import { TaskEither, tryCatch, taskify } from "fp-ts/lib/TaskEither";
+import {
+  Credentials,
+  OAuth2Client,
+  GetTokenOptions
+} from "google-auth-library";
 import { Interval } from "./commands/add";
 import { format, addDays, startOfDay, endOfDay } from "date-fns";
 import { GaxiosResponse } from "gaxios";
 import { identity } from "fp-ts/lib/function";
 import { taskEither } from "fp-ts/lib/TaskEither";
+import { fluent } from "./utils/fluent";
+import { Option, fromNullable, none, fold } from "fp-ts/lib/Option";
 const OAuth2 = google.auth.OAuth2;
 
 const port = 5555;
@@ -37,83 +43,104 @@ const calendar = google.calendar({
   auth: oauth2Client
 });
 
-function authenticate(): TaskEither<unknown, Credentials> {
-  const p = () =>
-    new Promise<Credentials>((resolve, reject) => {
-      const retrieveCredentials = () => {
-        if (fs.existsSync(credentialsPath)) {
-          const tokens = JSON.parse(
-            fs.readFileSync(credentialsPath, "utf-8")
-          ) as Credentials;
-          if (tokens.expiry_date > Date.now()) {
-            oauth2Client.setCredentials(tokens);
-            return tokens;
-          }
-        }
-        return null;
-      };
-
-      const credentials = retrieveCredentials();
-      if (credentials) {
-        resolve(credentials);
-        return;
+function retrieveExistingCredentials(): TaskEither<
+  unknown,
+  Option<Credentials>
+> {
+  return taskEither.fromIO(() => {
+    if (fs.existsSync(credentialsPath)) {
+      const tokens = JSON.parse(
+        fs.readFileSync(credentialsPath, "utf-8")
+      ) as Credentials;
+      if (tokens.expiry_date > Date.now()) {
+        oauth2Client.setCredentials(tokens);
+        return fromNullable(tokens);
       }
+    }
+    return none;
+  });
+}
 
-      const scopes = [
-        "https://www.googleapis.com/auth/calendar.events",
-        "https://www.googleapis.com/auth/userinfo.profile"
-      ];
+function exchangeCodeForCredentials(
+  code: GetTokenOptions
+): TaskEither<unknown, Credentials> {
+  return fluent(taskEither)(taskify(oauth2Client.getToken)(code))
+    .chain(
+      credentials => saveCredentials(credentials, oauth2Client) as any // TODO
+    )
+    .mapLeft(err =>
+      fluent(taskEither)(
+        logError(`${err.response.status} ${err.response.statusText}`)
+      )
+        .chain(() => logError(JSON.stringify(err.response.data)))
+        .value()
+    ).value;
+}
 
-      const url = oauth2Client.generateAuthUrl({
-        access_type: "offline",
-        scope: scopes
-      });
+function authenticateWithGoogle(): TaskEither<unknown, Credentials> {
+  const scopes = [
+    "https://www.googleapis.com/auth/calendar.events",
+    "https://www.googleapis.com/auth/userinfo.profile"
+  ];
 
-      logInfo("\nVisit this URL to authenticate with your Google account:");
-      logDetail(`\n  ${url}`);
+  const url = oauth2Client.generateAuthUrl({
+    access_type: "offline",
+    scope: scopes
+  });
 
-      const app = express();
+  return fluent(taskEither)(
+    logInfo("\nVisit this URL to authenticate with your Google account:")
+  )
+    .chain(() => logDetail(`\n  ${url}`))
+    .chain(() =>
+      tryCatch(
+        () =>
+          new Promise<Credentials>((resolve, reject) => {
+            const app = express();
 
-      app.get("/authorize", (req, res) => {
-        const code = req.query.code;
-        res
-          .status(200)
-          .send(
-            "Successfully authenticated! You can now close this tab and go back to your terminal."
-          );
+            app.get("/authorize", (req, res) => {
+              const code = req.query.code;
 
-        oauth2Client.getToken(code, (err, tokens) => {
-          if (!err) {
-            if (!fs.existsSync(ferioDir)) {
-              fs.mkdirSync(ferioDir, { recursive: true });
-            }
-            fs.writeFileSync(credentialsPath, JSON.stringify(tokens, null, 2));
-            oauth2Client.setCredentials(tokens);
-            logInfo(
-              "\n:white_check_mark: Successfully authenticated. Let's move on!"
-            );
-            resolve(tokens);
-          } else {
-            logError(`${err.response.status} ${err.response.statusText}`);
-            logError(JSON.stringify(err.response.data));
-            reject(err);
-          }
-        });
-      });
+              res
+                .status(200)
+                .send(
+                  "Successfully authenticated! You can now close this tab and go back to your terminal."
+                );
 
-      app.listen(port);
-    });
+              exchangeCodeForCredentials(code)().then(reject, resolve);
+            });
+            app.listen(port);
+          }),
+        identity
+      )
+    ).value;
+}
 
-  return tryCatch(p, r => r);
+function saveCredentials(
+  tokens: Credentials,
+  oauth2Client: OAuth2Client
+): TaskEither<unknown, void> {
+  return taskEither.fromIO(() => {
+    if (!fs.existsSync(ferioDir)) {
+      fs.mkdirSync(ferioDir, { recursive: true });
+    }
+    fs.writeFileSync(credentialsPath, JSON.stringify(tokens, null, 2));
+    oauth2Client.setCredentials(tokens);
+  });
+}
+
+function authenticate(): TaskEither<unknown, Credentials> {
+  return fluent(taskEither)(retrieveExistingCredentials()).chain(creds =>
+    fold(creds, authenticateWithGoogle, taskEither.of)
+  ).value;
 }
 
 function authenticatedApiCall<A>(
   f: () => Promise<GaxiosResponse<A>>
 ): TaskEither<unknown, A> {
-  return taskEither.map(
-    taskEither.chain(authenticate(), () => tryCatch(f, identity)),
-    r => r.data
-  );
+  return fluent(taskEither)(authenticate())
+    .chain(() => tryCatch(f, identity))
+    .map(r => r.data).value;
 }
 
 export function getMe(): TaskEither<unknown, oauth2_v2.Schema$Userinfoplus> {

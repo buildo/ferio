@@ -4,7 +4,8 @@ import {
   tryCatch,
   taskEither,
   fromLeft,
-  mapLeft
+  mapLeft,
+  taskEitherSeq
 } from "fp-ts/lib/TaskEither";
 import { Option, some, none, option, fold } from "fp-ts/lib/Option";
 import * as fs from "fs";
@@ -15,7 +16,8 @@ import fetch, { Headers } from "node-fetch";
 import { identity, constNull } from "fp-ts/lib/function";
 import { array } from "fp-ts";
 import { Interval } from "./commands/add";
-import { Do } from "fp-ts-contrib/lib/Do";
+import { fluent } from "./utils/fluent";
+import { sequenceT } from "fp-ts/lib/Apply";
 
 const ferioAccessKey = process.env.TEAMWEEK_API_ACCESS_KEY;
 const ferioSecretKey = process.env.TEAMWEEK_API_SECRET_KEY;
@@ -194,42 +196,36 @@ export function getProjects(): TaskEither<unknown, Array<Project>> {
 }
 
 export function getFerieProject(): TaskEither<unknown, Project> {
-  return Do(taskEither)
-    .bind("projects", getProjects())
-    .bindL("project", ({ projects }) => {
-      const project = array.findFirst(
-        projects,
-        w => w.name.toLowerCase() === "ferie"
-      );
-      return fold(
-        project,
-        () => fromLeft("'ferie' project not found"),
-        taskEither.of
-      );
-    })
-    .return(({ project }) => project);
+  return fluent(taskEither)(getProjects()).chain(projects => {
+    const project = array.findFirst(
+      projects,
+      w => w.name.toLowerCase() === "ferie"
+    );
+    return fold(
+      project,
+      () => fromLeft("'ferie' project not found"),
+      taskEither.of
+    );
+  }).value;
 }
 
 export function addTask(
   name: string,
   interval: Interval
 ): TaskEither<unknown, void> {
-  return Do(taskEither)
-    .bind("user", getMe())
-    .bind("workspace", getBuildoWorkspace())
-    .bind("project", getFerieProject())
-    .doL(({ user, workspace, project }) =>
-      post<void, Task>(`/${workspace.id}/tasks`, {
-        name,
-        project_id: project.id,
-        user_id: user.id,
-        start_date: interval.from.toISOString().split("T")[0],
-        end_date: interval.to.toISOString().split("T")[0],
-        color: project.color,
-        done: false,
-        pinned: false,
-        estimated_hours: 0
-      })
-    )
-    .return(constNull);
+  return fluent(taskEither)(
+    sequenceT(taskEitherSeq)(getMe(), getBuildoWorkspace(), getFerieProject())
+  ).chain(([user, workspace, project]) =>
+    post<void, Task>(`/${workspace.id}/tasks`, {
+      name,
+      project_id: project.id,
+      user_id: user.id,
+      start_date: interval.from.toISOString().split("T")[0],
+      end_date: interval.to.toISOString().split("T")[0],
+      color: project.color,
+      done: false,
+      pinned: false,
+      estimated_hours: 0
+    })
+  ).value;
 }
